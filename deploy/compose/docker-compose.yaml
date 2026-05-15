@@ -1,0 +1,86 @@
+services:
+  aira-instruct-llm:
+    container_name: aira-instruct-llm
+    image: ${AIRA_INSTRUCT_LLM_IMAGE:-nvcr.io/nim/meta/llama-3.3-70b-instruct:1.14.0}
+    runtime: nvidia
+    volumes:
+    - ${MODEL_DIRECTORY:-./}:/opt/nim/.cache
+    user: "${USERID}"
+    ports:
+    - "8050:8000"
+    expose:
+    - "8050"
+    environment:
+      NGC_API_KEY: ${NGC_API_KEY}
+      NIM_MODEL_PROFILE: ${NIM_MODEL_PROFILE:-}
+    shm_size: 20gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${AIRA_LLM_MS_GPU_ID:-0}']
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import requests; requests.get('http://localhost:8000/v1/health/ready')"]
+      interval: 30s
+      timeout: 20s
+      retries: 100
+    networks:
+      - nvidia-rag
+    profiles: ["aira-instruct-llm"]
+
+  aira-backend:
+    container_name: aira-backend
+    image: nvcr.io/nvidia/blueprint/aira-backend:v1.2.0
+    runtime: nvidia
+    build:
+      context: ../../
+      dockerfile: deploy/Dockerfile
+    entrypoint: "/entrypoint.sh"
+    ports:
+      - "3838:3838"
+    expose:
+      - "3838"
+    environment:
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-this-is-a-test-key}
+      AIRA_APPLY_GUARDRAIL: "false"
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-your-nvidia-api-key}
+      AIRA_HOSTED_NIMS: ${AIRA_HOSTED_NIMS:-false}
+      # Required for rag middleware via fastapi extensions
+      RAG_INGEST_URL: ${RAG_INGEST_URL:-http://ingestor-server:8082/v1}
+      RAG_SERVER_URL: ${RAG_SERVER_URL:-http://rag-server:8081/v1}
+      # Forwarded to configs/config.yml so model + endpoints can be set via .env
+      INSTRUCT_LLM_MODEL_NAME: ${INSTRUCT_LLM_MODEL_NAME:-meta/llama-3.3-70b-instruct}
+      INSTRUCT_LLM_BASE_URL: ${INSTRUCT_LLM_BASE_URL:-http://aira-instruct-llm:8000/v1}
+      INSTRUCT_LLM_API_KEY: ${INSTRUCT_LLM_API_KEY:-not-needed}
+      NEMOTRON_LLM_MODEL_NAME: ${NEMOTRON_LLM_MODEL_NAME:-nvidia/llama-3.3-nemotron-super-49b-v1.5}
+      NEMOTRON_LLM_BASE_URL: ${NEMOTRON_LLM_BASE_URL:-http://nim-llm-ms:8000/v1}
+      NEMOTRON_LLM_API_KEY: ${NEMOTRON_LLM_API_KEY:-not-needed}
+    volumes:
+      - ../../configs:/app/configs
+    networks:
+      - nvidia-rag
+    profiles: ["aira"]
+    
+  aira-frontend:
+    container_name: aira-frontend
+    image: nvcr.io/nvidia/blueprint/aira-frontend:v1.2.0
+    ports:
+      - "3000:3000"
+    expose:
+      - "3000"
+    networks:
+      - nvidia-rag
+    environment:
+      NVWB_TRIM_PREFIX: true
+      INFERENCE_ORIGIN: ${INFERENCE_ORIGIN:-http://aira-backend:3838}
+    profiles: ["aira"]
+
+# RAG is deployed on a separate host, so the nvidia-rag network is created locally
+# rather than attached to an existing one from a co-located RAG docker compose.
+# Flip `external` back to true if you ever co-locate AIRA with a local RAG deployment.
+networks:
+  nvidia-rag:
+    external: false
+    name: nvidia-rag
